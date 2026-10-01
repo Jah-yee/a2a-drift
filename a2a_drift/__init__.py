@@ -2,11 +2,14 @@
 
 __version__ = "0.1.0"
 
+import ipaddress
 import json
 import logging
+import socket
 import time
+import urllib.parse
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 
@@ -31,6 +34,8 @@ class ValidationResult:
     response_time_ms: Optional[float] = None
     error: Optional[str] = None
     attempts: int = 0
+    # The spec version the check was measured against (the --spec-version target).
+    spec_version_target: Optional[str] = None
 
     def add_drift(
         self,
@@ -75,6 +80,48 @@ def _should_retry(exc: Exception) -> bool:
     return False
 
 
+def _is_internal_ip(ip: Union[ipaddress.IPv4Address, ipaddress.IPv6Address]) -> bool:
+    """Return True for addresses that must not be reached from an untrusted URL."""
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def validate_url(url: str, allow_internal: bool = False) -> Optional[str]:
+    """Check that ``url`` is well formed and, unless allowed, not internal.
+
+    Returns an error message describing the problem, or ``None`` when the URL is
+    acceptable. When internal addresses are allowed no name resolution happens at
+    all, so the common case stays offline and cheap; the resolution pass only
+    runs when the caller has opted into blocking internal targets, which is the
+    SSRF hardening described in CWE-918.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"invalid URL scheme: {parsed.scheme or '(none)'}"
+    hostname = parsed.hostname
+    if not hostname:
+        return "invalid URL: no hostname"
+    if allow_internal:
+        return None
+
+    try:
+        addresses = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return f"could not resolve hostname: {hostname}"
+
+    for entry in addresses:
+        ip = ipaddress.ip_address(entry[4][0])
+        if _is_internal_ip(ip):
+            return f"internal URL blocked ({ip}); pass --allow-internal to override"
+    return None
+
+
 class AgentCardChecker:
     """Validate an A2A agent card against the spec and detect drift."""
 
@@ -82,15 +129,34 @@ class AgentCardChecker:
     SPEC_VERSIONS = ["0.3", "1.0"]
     CURRENT_SPEC = "1.0"
 
-    def __init__(self, url: str, timeout: float = 10.0, max_retries: int = 3):
+    def __init__(
+        self,
+        url: str,
+        timeout: float = 10.0,
+        max_retries: int = 3,
+        target_spec_version: Optional[str] = None,
+        allow_internal: bool = False,
+    ):
         self.url = url
         self.timeout = timeout
-        self.max_retries = max_retries
+        # max_retries is an attempt count, so it must never drop below 1: a range
+        # of zero iterations leaves `response` unbound and crashes further down.
+        self.max_retries = max(1, int(max_retries))
+        self.target_spec_version = target_spec_version or self.CURRENT_SPEC
+        self.allow_internal = allow_internal
 
     def validate(self) -> ValidationResult:
         result = ValidationResult(url=self.url)
-        
+        result.spec_version_target = self.target_spec_version
+
+        blocked = validate_url(self.url, allow_internal=self.allow_internal)
+        if blocked:
+            result.error = blocked
+            result.add_drift("security-transport", "error", blocked)
+            return result
+
         last_error = None
+        response = None
         for attempt in range(self.max_retries):
             try:
                 response = httpx.get(
@@ -114,18 +180,35 @@ class AgentCardChecker:
                     result.add_drift("fetch-error", "error", result.error)
                     result.attempts = attempt + 1
                     return result
-        
-        if last_error and result.error:
-            result.attempts = self.max_retries
+
+        if response is None:
+            # Defensive: no attempt produced a response, so there is nothing to
+            # parse. Report it instead of dereferencing an unbound name.
+            if last_error is not None and result.error is None:
+                result.error = f"Failed to fetch agent card: {last_error}"
+                result.add_drift("fetch-error", "error", result.error)
+            else:
+                result.error = "No attempt was made (max_retries must be >= 1)"
+                result.add_drift("fetch-error", "error", result.error)
+            result.attempts = max(self.max_retries, result.attempts)
             return result
-        
+
         try:
             card = response.json()
         except json.JSONDecodeError as e:
             result.error = f"Agent card is not valid JSON: {e}"
             result.add_drift("json-parse-error", "error", result.error)
             return result
-        
+
+        # A well-formed JSON body of the wrong shape is a schema violation, not a
+        # crash: `in` and `.get` below only work on a mapping.
+        if not isinstance(card, dict):
+            result.error = (
+                f"Agent card must be a JSON object, got {type(card).__name__}"
+            )
+            result.add_drift("schema-violation", "error", result.error, path="$")
+            return result
+
         # Check required fields
         for field_name in self.REQUIRED_FIELDS:
             if field_name not in card:
@@ -135,19 +218,20 @@ class AgentCardChecker:
                     f"Missing required field: {field_name}",
                     path=f"$.{field_name}"
                 )
-        
+
         # Check spec version. Match the leading major.minor component only:
         # a substring test would read protocolVersion "0.1.0" as spec 1.0.
         proto_version = card.get("protocolVersion", "")
         detected = _normalize_spec_version(proto_version)
-        if detected == self.CURRENT_SPEC:
+        target = self.target_spec_version
+        if detected == target:
             result.spec_version = detected
         elif detected is not None:
             result.spec_version = detected
             result.add_drift(
                 "spec-version",
                 "warning",
-                f"Agent uses spec v{detected}; v{self.CURRENT_SPEC} is current"
+                f"Agent uses spec v{detected}; v{target} is the expected version"
             )
         else:
             result.add_drift(
@@ -175,22 +259,39 @@ class AgentCardChecker:
 class EndpointProber:
     """Probe a live A2A endpoint for JSON-RPC conformance."""
 
-    def __init__(self, endpoint_url: str, timeout: float = 10.0, max_retries: int = 3):
+    def __init__(
+        self,
+        endpoint_url: str,
+        timeout: float = 10.0,
+        max_retries: int = 3,
+        allow_internal: bool = False,
+    ):
         self.endpoint_url = endpoint_url
         self.timeout = timeout
-        self.max_retries = max_retries
+        # At least one attempt, for the same reason as AgentCardChecker.
+        self.max_retries = max(1, int(max_retries))
+        self.allow_internal = allow_internal
 
     def probe(self, method: str, params: Optional[dict] = None) -> ValidationResult:
         result = ValidationResult(url=self.endpoint_url)
-        
+
+        blocked = validate_url(
+            self.endpoint_url, allow_internal=self.allow_internal
+        )
+        if blocked:
+            result.error = blocked
+            result.add_drift("security-transport", "error", blocked)
+            return result
+
         payload = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params or {},
             "id": 1
         }
-        
+
         last_error = None
+        response = None
         for attempt in range(self.max_retries):
             try:
                 start = time.time()
@@ -220,9 +321,15 @@ class EndpointProber:
                     result.add_drift("probe-error", "error", result.error)
                     result.attempts = attempt + 1
                     return result
-        
-        if last_error and result.error:
-            result.attempts = self.max_retries
+
+        if response is None:
+            if last_error is not None and result.error is None:
+                result.error = f"Failed to probe endpoint: {last_error}"
+                result.add_drift("probe-error", "error", result.error)
+            else:
+                result.error = "No attempt was made (max_retries must be >= 1)"
+                result.add_drift("probe-error", "error", result.error)
+            result.attempts = max(self.max_retries, result.attempts)
             return result
         
         if response.status_code not in (200, 202, 204):
