@@ -338,8 +338,10 @@ class EndpointProber:
                 "error",
                 f"Non-success HTTP status: {response.status_code}"
             )
+            # A response was obtained and rejected: conformance is decided.
+            result.jsonrpc_compliant = False
             return result
-        
+
         try:
             resp_json = response.json()
         except (json.JSONDecodeError, Exception):
@@ -350,7 +352,17 @@ class EndpointProber:
             )
             result.jsonrpc_compliant = False
             return result
-        
+
+        # A JSON-RPC response must be an object; arrays and scalars are invalid.
+        if not isinstance(resp_json, dict):
+            result.add_drift(
+                "jsonrpc-conformance",
+                "error",
+                f"Response must be a JSON object, got {type(resp_json).__name__}"
+            )
+            result.jsonrpc_compliant = False
+            return result
+
         # Check JSON-RPC 2.0 required fields
         if "jsonrpc" not in resp_json:
             result.add_drift(
@@ -364,7 +376,7 @@ class EndpointProber:
                 "error",
                 f"Expected jsonrpc='2.0', got '{resp_json['jsonrpc']}'"
             )
-        
+
         if "id" not in resp_json:
             result.add_drift(
                 "jsonrpc-conformance",
@@ -379,13 +391,50 @@ class EndpointProber:
                 f"got {resp_json['id']}"
             )
 
-        if "result" not in resp_json and "error" not in resp_json:
+        # Exactly one of result/error must be present (JSON-RPC 2.0 §5.1).
+        has_result = "result" in resp_json
+        has_error = "error" in resp_json
+        if not has_result and not has_error:
             result.add_drift(
                 "jsonrpc-conformance",
                 "error",
                 "Response must contain either 'result' or 'error'"
             )
-        
+        elif has_result and has_error:
+            result.add_drift(
+                "jsonrpc-conformance",
+                "error",
+                "Response must not contain both 'result' and 'error'"
+            )
+        elif has_error:
+            error = resp_json["error"]
+            if not isinstance(error, dict):
+                result.add_drift(
+                    "jsonrpc-conformance",
+                    "error",
+                    f"error must be an object, got {type(error).__name__}"
+                )
+            else:
+                code = error.get("code")
+                if "code" not in error:
+                    result.add_drift(
+                        "jsonrpc-conformance",
+                        "error",
+                        "error.code is required and must be an integer"
+                    )
+                elif isinstance(code, bool) or not isinstance(code, int):
+                    result.add_drift(
+                        "jsonrpc-conformance",
+                        "error",
+                        f"error.code must be an integer, got {code!r}"
+                    )
+                if not isinstance(error.get("message"), str):
+                    result.add_drift(
+                        "jsonrpc-conformance",
+                        "error",
+                        "error.message is required and must be a string"
+                    )
+
         # Set jsonrpc_compliant based on conformance checks
         if any(
             d.drift_type == "jsonrpc-conformance" and d.severity == "error"
@@ -394,5 +443,5 @@ class EndpointProber:
             result.jsonrpc_compliant = False
         else:
             result.jsonrpc_compliant = True
-        
+
         return result
