@@ -29,7 +29,8 @@ Follow existing code style. Run linters/formatters if the project has them.
 
 ## Code of Conduct
 
-This project follows a [Code of Conduct](https://github.com/yunaremaia/a2a-drift/blob/main/CODE_OF_CONDUCT.md). By participating, you agree to uphold it.
+Be respectful and constructive. Reviews are about the code, not the person who
+wrote it.
 
 ## Security
 

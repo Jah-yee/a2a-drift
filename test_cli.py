@@ -317,3 +317,26 @@ class TestDenyInternalFlag:
         assert code == 1
         assert "internal URL blocked" in out
         assert mock_post.call_count == 0
+
+class TestModuleEntryPoint:
+    """`python -m a2a_drift` must dispatch to the CLI, not just re-export names."""
+
+    def test_dunder_main_exposes_the_public_api(self):
+        import a2a_drift.__main__ as entry
+
+        assert entry.AgentCardChecker is not None
+        assert entry.EndpointProber is not None
+        assert callable(entry.main)
+
+    def test_dunder_main_runs_the_cli(self, capsys):
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "a2a_drift", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0
+        assert "Detect A2A protocol compliance drift" in completed.stdout
+        assert "{check,probe,batch}" in completed.stdout

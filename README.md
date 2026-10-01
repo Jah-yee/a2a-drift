@@ -25,8 +25,18 @@ The A2A protocol (25k+ stars, v1.0 since March 2026) is the Linux Foundation sta
 
 ## Install
 
+Not published to PyPI yet. Install from source:
+
 ```bash
-pip install a2a-drift
+pip install git+https://github.com/yunaremaia/a2a-drift.git
+```
+
+or, for development:
+
+```bash
+git clone https://github.com/yunaremaia/a2a-drift.git
+cd a2a-drift
+pip install -e .
 ```
 
 ## Usage
@@ -80,15 +90,21 @@ print(result.is_jsonrpc_compliant)
 print(result.response_time_ms)
 ```
 
-### GitHub Action
+### CI
+
+Run the CLI in a workflow and upload the SARIF report to GitHub Code Scanning:
 
 ```yaml
-- uses: yunaremaia/a2a-drift@v1
+- run: pip install git+https://github.com/yunaremaia/a2a-drift.git
+- run: a2a-drift check "$AGENT_CARD_URL" --deny-internal --format sarif --output a2a-drift.sarif
+- uses: github/codeql-action/upload-sarif@v3
   with:
-    url: https://your-agent.com/.well-known/agent-card.json
-    spec-version: '1.0'
-    fail-on-drift: true
+    sarif_file: a2a-drift.sarif
 ```
+
+The CLI exits 1 when any error-severity drift is found, so it works as a
+pass/fail gate directly. A prebuilt `action.yml` is on the roadmap but does
+not exist yet.
 
 ## Drift Detection
 
@@ -132,7 +148,7 @@ To report a vulnerability, please see [SECURITY.md](SECURITY.md).
 - [x] Spec version drift detection
 - [x] SARIF output
 - [ ] Custom conformance profiles (issue #5)
-- [ ] GitHub Action
+- [ ] Prebuilt GitHub Action (`action.yml`) — not yet available
 - [ ] CI/CD integration (exit codes, JSON output)
 - [ ] Streaming (SSE) capability verification
 - [ ] Authentication/transport security checks
