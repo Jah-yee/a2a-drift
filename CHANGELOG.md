@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 - `ValidationResult.spec_version_target` records the version drift was measured against.
 - `to_sarif()` in `a2a_drift/cli.py`; `check`, `probe` and `batch` accept `--format sarif`.
 - `--output` is now honored by the `probe` subcommand.
+- CI now tests Python 3.9, the floor declared in `pyproject.toml`.
+- `test_packaging.py` fails if `requires-python` and the CI matrix drift apart, or
+  if 3.10+-only syntax (PEP 604 `X | None` unions) sneaks into the package.
 
 ### Changed
 
