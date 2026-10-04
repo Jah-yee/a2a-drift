@@ -235,8 +235,12 @@ def main() -> None:
         out_str = _render(result, args.format)
 
         if args.output:
-            with open(args.output, "w") as f:
-                f.write(out_str + "\n")
+            try:
+                with open(args.output, "w") as f:
+                    f.write(out_str + "\n")
+            except OSError as e:
+                print(f"ERROR: cannot write to {args.output}: {e}", file=sys.stderr)
+                sys.exit(2)
         else:
             print(out_str)
 
@@ -257,8 +261,12 @@ def main() -> None:
         out_str = _render(result, args.format)
 
         if args.output:
-            with open(args.output, "w") as f:
-                f.write(out_str + "\n")
+            try:
+                with open(args.output, "w") as f:
+                    f.write(out_str + "\n")
+            except OSError as e:
+                print(f"ERROR: cannot write to {args.output}: {e}", file=sys.stderr)
+                sys.exit(2)
         else:
             print(out_str)
 
@@ -332,8 +340,12 @@ def main() -> None:
             )
 
         if args.output:
-            with open(args.output, "w") as f:
-                f.write(out_str + "\n")
+            try:
+                with open(args.output, "w") as f:
+                    f.write(out_str + "\n")
+            except OSError as e:
+                print(f"ERROR: cannot write to {args.output}: {e}", file=sys.stderr)
+                sys.exit(2)
         else:
             print(out_str)
 
