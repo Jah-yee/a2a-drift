@@ -37,6 +37,19 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- A JSON-RPC response whose `id` has the right value but the wrong type is now
+  reported as drift. `probe()` sends `"id": 1` and verified the answer with a
+  bare `!=`, and Python has `True == 1` and `1.0 == 1`, so an endpoint replying
+  with a boolean or float id took the conforming branch and was reported
+  compliant with an empty drift list and exit 0 -- a false green in CI. The id
+  is now compared by value *and* type. The predicate only adds branches, so no
+  response that was previously flagged becomes silent. Contributed by
+  [@Jah-yee](https://github.com/Jah-yee) in #46.
+- An unwritable `--output` path exits 2 with the path on stderr, on `check`,
+  `probe` and `batch`. It previously raised an unhandled `OSError` out of
+  `main()` and exited 1 -- the same code used for a genuine NON-COMPLIANT
+  result, so a crash was indistinguishable from a real finding. Contributed by
+  [@Jah-yee](https://github.com/Jah-yee) in #46.
 - `--spec-version` normalises the target the same way the detected
   `protocolVersion` is normalised, instead of comparing a normalised value
   against a raw command-line string. `1.0.0`, `1.0-rc.1`, `1.0+build.7` and a
