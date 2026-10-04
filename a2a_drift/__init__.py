@@ -625,7 +625,10 @@ class EndpointProber:
             result.add_drift(
                 "jsonrpc-conformance", "error", "Missing 'id' field in response"
             )
-        elif resp_json["id"] != payload["id"]:
+        elif (
+            resp_json["id"] != payload["id"]
+            or type(resp_json["id"]) is not type(payload["id"])
+        ):
             result.add_drift(
                 "jsonrpc-conformance",
                 "error",
