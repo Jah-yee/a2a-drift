@@ -340,6 +340,116 @@ class TestBatchPerItemException:
         assert code == 1
 
 
+class TestUnwritableOutputPath:
+    """An unwritable --output is a usage error, not a traceback (issue #43).
+
+    All three subcommands wrote the report with a bare ``open()``. A missing
+    parent directory or a read-only mount raised out of ``main()``, and the
+    process died with a traceback and exit 1 -- the same code that means
+    NON-COMPLIANT, so a CI gate could not tell "the checker broke" from "the
+    agent drifted". These tests pin the distinct exit code and the message.
+
+    Every case here raises a real ``OSError`` from the real ``open()``: the
+    point of the fix is which exception the handler catches, so mocking
+    ``open`` would test the mock rather than the contract. ``FileNotFoundError``
+    is an ``OSError`` subclass, so the missing-parent case covers the handler.
+    """
+
+    @patch("a2a_drift.httpx.get")
+    def test_check_exits_2_when_output_dir_is_missing(self, mock_get, tmp_path):
+        mock_get.return_value = card_response(LEGACY_CARD)
+        target = tmp_path / "no-such-dir" / "report.json"
+
+        code, out, err = run_cli(
+            ["check", "https://example.com/card.json", "--output", str(target)]
+        )
+
+        assert code == 2
+        # No traceback, and nothing on stdout pretending a report was produced.
+        assert "Traceback" not in err
+        assert out == ""
+        assert str(target) in err
+        assert "cannot write" in err
+
+    @patch("a2a_drift.httpx.post")
+    def test_probe_exits_2_when_output_dir_is_missing(self, mock_post, tmp_path):
+        mock_post.return_value = rpc_response(VALID_RPC)
+        target = tmp_path / "no-such-dir" / "probe.json"
+
+        code, out, err = run_cli(
+            ["probe", "https://example.com/a2a", "--output", str(target)]
+        )
+
+        assert code == 2
+        assert "Traceback" not in err
+        assert out == ""
+        assert str(target) in err
+        assert "cannot write" in err
+
+    @patch("a2a_drift.httpx.get")
+    def test_batch_exits_2_when_output_dir_is_missing(self, mock_get, tmp_path):
+        mock_get.return_value = card_response(LEGACY_CARD)
+        urls = tmp_path / "agents.txt"
+        urls.write_text("https://example.com/one.json\n")
+        target = tmp_path / "no-such-dir" / "batch.json"
+
+        code, out, err = run_cli(
+            ["batch", "--file", str(urls), "--output", str(target)]
+        )
+
+        assert code == 2
+        assert "Traceback" not in err
+        assert out == ""
+        assert str(target) in err
+        assert "cannot write" in err
+
+    @patch("a2a_drift.httpx.get")
+    def test_check_exits_2_when_output_path_is_a_directory(self, mock_get, tmp_path):
+        """A path that is a directory raises IsADirectoryError, also an OSError."""
+        mock_get.return_value = card_response(LEGACY_CARD)
+        target = tmp_path / "a-directory"
+        target.mkdir()
+
+        code, _out, err = run_cli(
+            ["check", "https://example.com/card.json", "--output", str(target)]
+        )
+
+        assert code == 2
+        assert "Traceback" not in err
+        assert "cannot write" in err
+
+    @patch("a2a_drift.httpx.get")
+    def test_write_failure_is_distinguishable_from_drift(self, mock_get, tmp_path):
+        """The whole point of exit 2: it must not collide with exit 1.
+
+        A NON-COMPLIANT agent reports drift and exits 1; the same run with an
+        unwritable output path exits 2. A CI gate keys on those two numbers, so
+        a regression here silently turns a crash into a drift verdict.
+        """
+        mock_get.return_value = card_response({"name": "Incomplete"})
+
+        drifted, _out, _err = run_cli(
+            [
+                "check",
+                "https://example.com/card.json",
+                "--output",
+                str(tmp_path / "ok.json"),
+            ]
+        )
+        broken, _out2, _err2 = run_cli(
+            [
+                "check",
+                "https://example.com/card.json",
+                "--output",
+                str(tmp_path / "no-such-dir" / "ok.json"),
+            ]
+        )
+
+        assert drifted == 1
+        assert broken == 2
+        assert drifted != broken
+
+
 class TestTextReportSections:
     """The text report only prints the detail lines it actually has data for."""
 
