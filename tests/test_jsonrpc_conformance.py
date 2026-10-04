@@ -104,6 +104,59 @@ class TestResponseShape:
         assert any("must be a JSON object" in d.message for d in result.drift)
 
 
+class TestResponseIdTypeMatch:
+    """The response id must be the request id by value *and* by type.
+
+    ``probe()`` always sends ``"id": 1``, and JSON-RPC 2.0 §5 requires the
+    response to carry that same id. A bare ``!=`` cannot enforce it, because
+    Python compares ``True == 1`` and ``1.0 == 1``: both of those ids are
+    numerically equal to the one that was sent, so both took the conforming
+    branch and the endpoint was reported compliant with an empty ``drift``
+    list. In a CI gate that reads as "nothing found" -- the false-green this
+    tool exists to prevent.
+    """
+
+    @staticmethod
+    def conformance_findings(result):
+        """Only the response-side findings, ignoring request-schema warnings.
+
+        ``probe()`` is called with no params here, so every run also carries a
+        ``jsonrpc-request`` warning about the request that was sent. That
+        finding is about the request, not the response, and mixing it into
+        these assertions would let a missing id finding hide behind it.
+        """
+        return [d for d in result.drift if d.drift_type == "jsonrpc-conformance"]
+
+    def test_matching_int_id_is_compliant(self):
+        result = probe({"jsonrpc": "2.0", "id": 1, "result": {}})
+        assert result.jsonrpc_compliant is True
+        assert self.conformance_findings(result) == []
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        [True, 1.0, "1"],
+        ids=["bool-true", "float", "string"],
+    )
+    def test_id_of_another_type_is_not_compliant(self, bad_id):
+        """Every type that Python considers equal to 1 is still not id 1."""
+        result = probe({"jsonrpc": "2.0", "id": bad_id, "result": {}})
+
+        assert result.jsonrpc_compliant is False
+        findings = self.conformance_findings(result)
+        assert len(findings) == 1
+        assert findings[0].severity == "error"
+
+    def test_boolean_id_is_a_finding_rather_than_a_silent_pass(self):
+        """The exact false-green from issue #42: ``True != 1`` is False."""
+        result = probe({"jsonrpc": "2.0", "id": True, "result": {"ok": True}})
+
+        assert result.jsonrpc_compliant is False
+        findings = self.conformance_findings(result)
+        assert findings, "a boolean id must be reported, not accepted"
+        assert all(f.drift_type == "jsonrpc-conformance" for f in findings)
+        assert all(f.severity == "error" for f in findings)
+
+
 class TestComplianceIsAlwaysDecided:
     """jsonrpc_compliant must be True/False whenever a response was obtained."""
 
