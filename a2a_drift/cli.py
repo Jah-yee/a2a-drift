@@ -1,6 +1,7 @@
 """CLI for a2a-drift."""
 
 import argparse
+import math
 import json
 import sys
 
@@ -51,6 +52,17 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    """argparse type for --timeout: a finite, positive number of seconds."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from None
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number > 0")
     return parsed
 
 
@@ -138,7 +150,7 @@ def main() -> None:
         )
         subparser.add_argument(
             "--timeout",
-            type=float,
+            type=_positive_float,
             default=10.0,
             help="HTTP timeout in seconds (default: 10.0)",
         )
